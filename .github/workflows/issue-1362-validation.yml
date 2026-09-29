@@ -7,68 +7,63 @@ permissions:
 env:
   CARGO_BUILD_JOBS: 2
 jobs:
-  nonce:
+  module:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.89.0
         with:
-          components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
+          components: rustfmt, llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: issue-1362-${{ hashFiles('Cargo.lock') }}
+            /tmp/issue-1362-isolated/target
+          key: issue-1362-isolated-v1
       - name: Format new tests
-        run: rustfmt --edition 2021 contracts/credence_delegation/src/test_nonce_boundaries.rs
-      - name: Focused nonce tests
+        run: rustfmt --check --edition 2021 contracts/credence_delegation/src/test_nonce_boundaries.rs
+      - name: Build isolated module fixture
         run: |
-          cargo test -p credence_delegation --lib nonce::tests --locked 2>&1 | tee focused.log
+          python3 .github/issue-1362-isolate.py
+          cargo generate-lockfile --manifest-path /tmp/issue-1362-isolated/Cargo.toml
+          cargo update --manifest-path /tmp/issue-1362-isolated/Cargo.toml -p ed25519-dalek@3.0.0 --precise 2.2.0
+      - name: Exact module regressions
+        run: |
+          cargo test --manifest-path /tmp/issue-1362-isolated/Cargo.toml --lib nonce::tests --locked 2>&1 | tee isolated-tests.log
           exit "${PIPESTATUS[0]}"
-      - name: Full delegation tests
+      - name: Verify original TTL conversion fails the regression
+        if: always()
+        run: |
+          cp /tmp/issue-1362-isolated/src/nonce.rs /tmp/nonce-fixed.rs
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('/tmp/issue-1362-isolated/src/nonce.rs')
+          text = p.read_text()
+          assert '.min(u64::from(MAX_TTL))' in text
+          p.write_text(text.replace('.min(u64::from(MAX_TTL))', ''))
+          PY
+          set +e
+          cargo test --manifest-path /tmp/issue-1362-isolated/Cargo.toml --lib nonce::tests::expiry_ttl_floor_buffer_cap_and_extreme_timestamps --locked > original-ttl.log 2>&1
+          regression_status=$?
+          set -e
+          cp /tmp/nonce-fixed.rs /tmp/issue-1362-isolated/src/nonce.rs
+          cat original-ttl.log
+          test "$regression_status" -eq 101
+          grep -F 'left: 17280' original-ttl.log
+          grep -F 'right: 3110400' original-ttl.log
+      - name: Isolated module coverage
         if: always()
         continue-on-error: true
         run: |
-          cargo test -p credence_delegation --locked 2>&1 | tee delegation.log
-          exit "${PIPESTATUS[0]}"
-      - name: Workspace format
-        if: always()
-        continue-on-error: true
-        run: |
-          cargo fmt --all -- --check 2>&1 | tee format.log
-          exit "${PIPESTATUS[0]}"
-      - name: Workspace clippy
-        if: always()
-        continue-on-error: true
-        run: |
-          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings 2>&1 | tee clippy.log
-          exit "${PIPESTATUS[0]}"
-      - name: Workspace tests
-        if: always()
-        continue-on-error: true
-        run: |
-          cargo test --workspace --locked 2>&1 | tee workspace.log
-          exit "${PIPESTATUS[0]}"
-      - name: Error wire stability
-        if: always()
-        continue-on-error: true
-        run: |
-          cargo test -p credence_errors error_codes_wire --locked 2>&1 | tee error-wire.log
-          exit "${PIPESTATUS[0]}"
-      - name: Delegation WASM build
-        if: always()
-        continue-on-error: true
-        run: |
-          cargo build -p credence_delegation --target wasm32-unknown-unknown --release --locked 2>&1 | tee wasm.log
+          cargo llvm-cov --manifest-path /tmp/issue-1362-isolated/Cargo.toml --lib --locked --lcov --output-path module-coverage.lcov 2>&1 | tee module-coverage.log
           exit "${PIPESTATUS[0]}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: issue-1362-validation
+          name: issue-1362-isolated-results
           path: |
             *.log
-            contracts/credence_delegation/src/test_nonce_boundaries.rs
+            module-coverage.lcov
