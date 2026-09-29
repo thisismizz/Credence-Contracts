@@ -1,0 +1,74 @@
+name: Issue 1362 validation
+on:
+  push:
+    branches: ['verify/1362-nonce-boundaries']
+permissions:
+  contents: read
+env:
+  CARGO_BUILD_JOBS: 2
+jobs:
+  nonce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89.0
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: issue-1362-${{ hashFiles('Cargo.lock') }}
+      - name: Format new tests
+        run: rustfmt --edition 2021 contracts/credence_delegation/src/test_nonce_boundaries.rs
+      - name: Focused nonce tests
+        run: |
+          cargo test -p credence_delegation --lib nonce::tests --locked 2>&1 | tee focused.log
+          exit "${PIPESTATUS[0]}"
+      - name: Full delegation tests
+        if: always()
+        continue-on-error: true
+        run: |
+          cargo test -p credence_delegation --locked 2>&1 | tee delegation.log
+          exit "${PIPESTATUS[0]}"
+      - name: Workspace format
+        if: always()
+        continue-on-error: true
+        run: |
+          cargo fmt --all -- --check 2>&1 | tee format.log
+          exit "${PIPESTATUS[0]}"
+      - name: Workspace clippy
+        if: always()
+        continue-on-error: true
+        run: |
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings 2>&1 | tee clippy.log
+          exit "${PIPESTATUS[0]}"
+      - name: Workspace tests
+        if: always()
+        continue-on-error: true
+        run: |
+          cargo test --workspace --locked 2>&1 | tee workspace.log
+          exit "${PIPESTATUS[0]}"
+      - name: Error wire stability
+        if: always()
+        continue-on-error: true
+        run: |
+          cargo test -p credence_errors error_codes_wire --locked 2>&1 | tee error-wire.log
+          exit "${PIPESTATUS[0]}"
+      - name: Delegation WASM build
+        if: always()
+        continue-on-error: true
+        run: |
+          cargo build -p credence_delegation --target wasm32-unknown-unknown --release --locked 2>&1 | tee wasm.log
+          exit "${PIPESTATUS[0]}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: issue-1362-validation
+          path: |
+            *.log
+            contracts/credence_delegation/src/test_nonce_boundaries.rs
