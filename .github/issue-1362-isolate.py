@@ -7,9 +7,10 @@ executed here; normal crate execution remains blocked and must be disclosed.
 """
 from pathlib import Path
 import re
+import os
 
 source = Path('contracts/credence_delegation/src')
-root = Path('/tmp/issue-1362-isolated')
+root = Path(os.environ.get('ISSUE_1362_FIXTURE_ROOT', '/tmp/issue-1362-isolated'))
 (root / 'src').mkdir(parents=True, exist_ok=True)
 (root / 'errors/src').mkdir(parents=True, exist_ok=True)
 errors = Path('contracts/credence_errors/src/lib.rs').read_text()
@@ -19,7 +20,7 @@ for name in ['InvalidNonce', 'Overflow', 'Underflow']:
     assert len(matches) == 1, (name, matches)
     codes[name] = matches[0]
 lib = source.joinpath('lib.rs').read_text()
-span = re.search(r'pub const MAX_NONCE_INVALIDATION_SPAN: u64 = ([\d_]+);', lib).group(1)
+span = re.search(r'const MAX_NONCE_INVALIDATION_SPAN: u64 = ([\d_]+);', lib).group(1)
 root.joinpath('Cargo.toml').write_text('''[package]
 name = "nonce-isolated-validation"
 version = "0.0.0"
